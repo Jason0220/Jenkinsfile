@@ -1,0 +1,26 @@
+pipeline {
+    agent any
+
+    stages {
+        stage('CODE_SYNC') {
+            options {
+                retry(100)
+            }
+            steps {
+                checkout([$class: 'GitSCM', branches: [[name: '$GERRIT_REFSPEC']], extensions: [], userRemoteConfigs: [[credentialsId: 'Jenkins', refspec: 'refs/changes/*:refs/changes/*', url: 'ssh://10.10.192.13:29418/Prophet_II']]])
+            }
+        }
+        
+        stage('BUILD') {
+            steps {
+                dir ('target/prophet') {
+                    sh 'cp -r /home/data0/jenkins/tools/gcc-arm/gcc-arm-none-eabi-10-2020-q4-major-linux /home/data0/jenkins/workspace/GNSS_CI/tools/gcc/'
+                    sh 'sed -i \'s#gcc-arm-none-eabi-10-2020-q4-major#gcc-arm-none-eabi-10-2020-q4-major-linux#\' rtconfig.py'
+                    sh 'scons -c'
+                    sh 'scons -j16'
+                }
+            }
+        }
+    }
+}
+

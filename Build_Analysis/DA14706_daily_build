@@ -1,0 +1,52 @@
+pipeline {
+    agent any
+
+    stages {
+        stage('CODE_SYNC') {
+            options {
+                retry(100)
+            }
+            steps {
+                checkout([$class: 'GitSCM', branches: [[name: '*/master']], extensions: [[$class: 'CheckoutOption', timeout: 60]], userRemoteConfigs: [[credentialsId: 'A01_BU3_Adair', url: 'ssh://10.10.0.49:29418/A01_Watch']]])
+            }
+        }
+        stage('BUILD') {
+            steps {
+                dir ('target/da1470x_bootloader1') {
+                    sh 'sed -i \'s#e:/7-2018-q2/bin#../../../../tools/gcc-arm-none-eabi-7-2018-q2-update/bin#\' rtconfig.py'
+                    sh 'scons -c'
+                    sh 'scons -j16'
+                }
+                dir ('target/da1470x') {
+                    sh 'sed -i \'s#E:\\\\DiaSemi\\\\SmartSnippetsStudio2.0.16\\\\GCC\\\\7-2018-q2\\\\bin#..\\/..\\/..\\/..\\/tools\\/gcc-arm-none-eabi-7-2018-q2-update\\/bin#\' rtconfig.py'
+                    sh 'scons -c'
+                    sh 'scons ver=da14706_0.1.9.$BUILD_TIMESTAMP package=ota -j16'
+                }
+            }
+        }
+        stage('UPLOAD_to_FTP') {
+            steps {
+                ftpPublisher alwaysPublishFromMaster: false,
+                continueOnError: false,
+                failOnError: false,
+                masterNodeName: '',
+                paramPublish: null,
+                publishers: [[configName: '10.10.192.11', transfers: [[asciiMode: false, cleanRemote: false, excludes: '', flatten: false, makeEmptyDirs: false, noDefaultExcludes: false, patternSeparator: '[, ]+', remoteDirectory: 'DailyBuild/DA14706/da14706_0.1.9.${BUILD_TIMESTAMP}', remoteDirectorySDF: false, removePrefix: 'target/da1470x/ota', sourceFiles: 'target/da1470x/ota/upgrade_da14706_0.1.9.${BUILD_TIMESTAMP}_*.zip']], usePromotionTimestamp: false, useWorkspaceInPromotion: false, verbose: false]]
+            }
+        }
+        stage('EMAIL') {
+            steps {
+                emailext body: '''Hi all,
+                <BR>
+                <BR>DA14706 daily build 今日构建完成，请尽快验证各自的提交。版本存储路径：
+                <BR>ftp://10.10.192.11/DailyBuild/DA14706/da14706_0.1.9.$BUILD_TIMESTAMP/
+                <BR>（该版本构建于10.10.192.46）
+                <BR>
+                <BR>Thanks!
+                <BR>Best Regards,
+                <BR>// CI/CD Project Team
+                <BR>''', subject: '$DEFAULT_SUBJECT', to: '$DEFAULT_RECIPIENTS'
+            }
+        }
+    }
+}

@@ -3,13 +3,15 @@ import groovy.json.JsonOutput
 pipeline {
     agent any
     environment {
-        BUILD_WRAPPER="~/tools/build-wrapper-linux-x86"
-        SONAR_SCANNER="~/tools/sonar-scanner/bin"
-        PATH="$PATH:$BUILD_WRAPPER:$SONAR_SCANNER"
+        BUILD_WRAPPER = "/home/data0/jenkins/tools/build-wrapper-linux-x86"
+        SONAR_SCANNER = "/home/data0/jenkins/tools/sonar-scanner/bin"
+        GCC_ARM_TOOLCHAIN = "/home/data0/jenkins/tools/gcc-arm-none-eabi-10.3-2021.10/bin"
+        
+        PATH = "${PATH}:${GCC_ARM_TOOLCHAIN}:${BUILD_WRAPPER}:${SONAR_SCANNER}"
     }
-    
+
     stages {
-        stage('SYNC MAIN REPO') {
+        stage('Code_Sync') {
             options {
                 retry(20)
             }
@@ -17,46 +19,46 @@ pipeline {
                 checkout([$class: 'GitSCM', 
                     branches: [[name: '$GERRIT_REFSPEC']], 
                     extensions: [], 
-                    userRemoteConfigs: [[credentialsId: 'jenkins_13', 
-                    refspec: 'refs/changes/*:refs/changes/*', 
-                    url: 'ssh://10.10.192.13:29418/Echo']]])
+                    userRemoteConfigs: [[credentialsId: 'Jenkins', 
+                        refspec: 'refs/changes/*:refs/changes/*', 
+                        url: 'ssh://10.10.192.13:29418/RealtekAmebaSDK']]])
             }
         }
         
-        stage('Build #1 MAIN REPO') {
+        stage('Build') {
             steps {
-                dir ('target/apollo_4bp_evb') {
-                    sh 'git clean -fxd'
-                    sh 'scons -c'
-                    sh 'scons -j64'
+                ansiColor('xterm') { // 启用 ANSI 颜色支持
+                    dir('project/gtk/release') {
+                        sh """
+                            rm -rf build; mkdir build && cd build
+                            cmake .. -G"Unix Makefiles" -DCMAKE_TOOLCHAIN_FILE=../toolchain.cmake -DGTK_HEARABLE=ON
+                            build-wrapper-linux-x86-64 --out-dir ../../../../bw-output cmake --build . --target flash -j\$(nproc)
+                        """
+                    }
                 }
             }
         }
-
-        stage('Build #2 with Submodule') {
-            steps {
-                dir ('target/apollo_4bp_evb') {
-                    sh 'git clean -fxd'
-                    sh 'git submodule update --init --recursive --remote'
-                    sh 'scons -c'
-                    sh 'build-wrapper-linux-x86-64 --out-dir ../../bw-output scons -j64'
-                }
-            }
-        }
-
-        stage('SCAN') {
+        
+        stage('Code_Analysis') {
             steps {
                 withSonarQubeEnv('SonarQube_46') {
-                    sh 'sonar-scanner \
-                          -Dsonar.projectKey=Echo \
-                          -Dsonar.sources=. \
-                          -Dsonar.cfamily.build-wrapper-output=bw-output \
-                          -Dsonar.host.url=http://10.10.192.46:9000/sonarqube \
-                          -Dsonar.login=sqp_fa76b63883b7e39b4bcfd399cfabf9fefbcd5ef0'
+                    sh """
+                        touch sonar-project.properties
+                        echo "sonar.projectKey=CamBuds" >> sonar-project.properties
+                        echo "sonar.exclusions=component/**/*,project/gtk/scenario/**/*" >> sonar-project.properties
+                        echo "sonar.cpd.exclusions=component/**/*,project/gtk/scenario/**/*" >> sonar-project.properties
+                        sonar-scanner \
+                            -Dsonar.projectKey=CamBuds \
+                            -Dsonar.branch.name=${env.GERRIT_BRANCH}   \
+                            -Dsonar.sources=. \
+                            -Dsonar.cfamily.build-wrapper-output=bw-output \
+                            -Dsonar.host.url=http://10.10.192.46:9000/sonarqube \
+                            -Dsonar.login=sqp_5a2ea750b030d87a7ef6fa7a5ed2611b10effc0f
+                    """
                 }
             }
         }
-
+        
         stage("Quality Gate") {
             steps {
                 script {
@@ -80,7 +82,7 @@ pipeline {
     post {
         always {  // 无论构建成功或失败都执行
             script {
-                def consoleLog = currentBuild.rawBuild.getLog(100) // 获取全部日志。Gerrit maxLogSize=16KB
+                def consoleLog = currentBuild.rawBuild.getLog(100) // 获取全部日志
 
                 // Gerrit 相关信息
                 def gerritServer = "http://10.10.192.13:8082/gerrit"  // Gerrit 服务器地址
