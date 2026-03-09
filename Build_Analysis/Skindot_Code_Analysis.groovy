@@ -17,7 +17,7 @@ pipeline {
                         credentialsId: 'Jenkins',
                         name: 'origin',
                         refspec: 'refs/changes/*:refs/changes/*',
-                        url: 'ssh://10.10.192.13:29418/ResearchKitSDK'
+                        url: 'ssh://10.10.192.13:29418/Skindot'
                     ]]
                 ])
             }
@@ -59,12 +59,17 @@ pipeline {
                                 echo "gradlew script is not executable or does not exist."
                                 exit 1
                             fi
-                            ./gradlew clean sonarqube \
-                                -Dsonar.projectKey=ResearchKitSDK \
+                            ./gradlew clean
+                            if [ $? -ne 0 ]; then
+                                echo "Gradle clean task failed. Check clean.log for details."
+                                exit 1
+                            fi
+                            ./gradlew sonarqube \
+                                -Dsonar.projectKey=Skindot \
                                 -Dsonar.branch.name=master  \
-                                -Dsonar.projectName=ResearchKitSDK \
+                                -Dsonar.projectName=Skindot \
                                 -Dsonar.host.url=http://10.10.192.46:9000/sonarqube \
-                                -Dsonar.login=sqp_d76ae16ee264a50f232335f2e8b5fb996aa5f264
+                                -Dsonar.login=sqp_afff480fe161a003853472b58d4e1c81fe78c7e1
                         '''
                     }
                 }

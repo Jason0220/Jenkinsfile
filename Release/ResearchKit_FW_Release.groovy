@@ -21,6 +21,7 @@ pipeline {
                     echo "${env.verCode}"
                     env.targetDir = 'target/apollo_4b_evb'
                     echo "TARGET_DIR: ${env.targetDir}"
+                    env.Bootloader = ""
                 }
             }
         }
@@ -131,6 +132,7 @@ pipeline {
                                     python echo_single_firmware_ota.py user region=cn version="$APP_VERSION"
                                 '''
                             } else if (params.OTA_Category == 'Bootloader-only') {
+                                env.Bootloader = "bootloader.ony"
                                 sh '''
                                     echo "Generating Bootloader-only OTA upgrade package"
                                     python echo_single_firmware_ota.py ota region=cn version="$BOOTLOADER_VERSION"
@@ -326,11 +328,20 @@ pipeline {
                     echo "Firmware MD5: ${md5Value}"
                     echo "Firmware Version: ${verName}"
                     
+                    def releasePurpose = "default"
+                    if (params.GTK_USING_ALGO == "disable") {
+                        releasePurpose = "data.collection"
+                        echo "The purpose of this release is ${releasePurpose}"
+                    } else {
+                        releasePurpose = "algo"
+                        echo "The purpose of this release is ${releasePurpose}"
+                    }
+
                     def response = sh(
                         script: """
                             curl -s -w "\\n%{http_code}" -X POST -F "file=@${zipFilePath}" \\
                             -F "verCode=${env.verCode}" \\
-                            -F "verName=${verName}-${params.CHOOSE_RESEARCHKIT.toLowerCase()}_algo.${params.GTK_USING_ALGO}" \\
+                            -F "verName=${verName}-${params.CHOOSE_RESEARCHKIT.toLowerCase()}_${releasePurpose}_${env.Bootloader}" \\
                             -F "deviceTypeId=15" \\
                             -F "extType=.zip" \\
                             -F "md5=${md5Value}" \\

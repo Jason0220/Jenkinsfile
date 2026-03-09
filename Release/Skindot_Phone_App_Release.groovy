@@ -9,7 +9,7 @@ pipeline {
                     echo "${env.verName}"
                     env.verCode = env.verName.replaceAll('\\.', '')
                     echo "${env.verCode}"
-                    env.outDir = 'bledatatransfermodule/build/outputs/aar'
+                    env.outDir = 'app/build/outputs/apk/release'
                     echo "${env.outDir}"
                 }
             }
@@ -28,7 +28,7 @@ pipeline {
                         credentialsId: 'Jenkins',
                         name: 'origin',
                         refspec: '+refs/heads/master:refs/remotes/origin/master',
-                        url: 'ssh://10.10.192.13:29418/ResearchKitSDK'
+                        url: 'ssh://10.10.192.13:29418/Skindot'
                     ]]
                 ])
             }
@@ -51,15 +51,14 @@ pipeline {
                         echo "git clean -fxd executed successfully: All untracked files and directories removed"
                     }
 
-                    def versionFilePath = 'bledatatransfermodule/build.gradle'
+                    def versionFilePath = 'app/build.gradle.kts'
                     def fileContent = readFile(file: versionFilePath)
-                    fileContent = fileContent.replaceFirst(/        versionName "[^"]+"/, "        versionName \"${env.verName}\"")
-                    fileContent = fileContent.replaceFirst(/        versionCode \d+/, "        versionCode ${env.verCode}")
+                    fileContent = fileContent.replaceFirst(/versionName\s*=\s*"[^"]+"/, "versionName = \"${env.verName}\"")
+                    fileContent = fileContent.replaceFirst(/versionCode\s*=\s*\d+/, "versionCode = ${env.verCode}")
                     writeFile file: versionFilePath, text: fileContent
-                    echo "Updated build.gradle version info:"
-                    def lines = fileContent.split('\n')
-                    for (def line : lines) {
-                        if (line.contains('versionName "') || line.contains('versionCode')) {
+                    echo "Updated build.gradle.kts version info:"
+                    fileContent.split('\n').each { line ->
+                        if (line.contains('versionName =') || line.contains('versionCode =')) {
                             echo line.trim()
                         }
                     }
@@ -86,12 +85,30 @@ pipeline {
                                 echo "gradlew script is not executable or does not exist."
                                 exit 1
                             fi
-                            ./gradlew clean :bledatatransfermodule:assembleRelease
+                            ./gradlew clean
+                            if [ $? -ne 0 ]; then
+                                echo "Gradle build failed. Check logs for details."
+                                exit 1
+                            fi
+                            ./gradlew assembleRelease
                             if [ $? -ne 0 ]; then
                                 echo "Gradle build failed. Check logs for details."
                                 exit 1
                             fi
                         '''
+                    }
+
+                    env.TIMESTAMP = new java.text.SimpleDateFormat("yyyyMMddHHmm").format(new Date())
+                    env.targetName = "skindot_${params.VERSION_NAME}.${env.TIMESTAMP}.apk"
+                    echo "Build Timestamp: ${env.TIMESTAMP}" 
+                    def targetFile = "app-release.apk"
+                    dir("${env.outDir}") {
+                        if (fileExists(targetFile)) {
+                            sh "mv ${targetFile} ${env.targetName}"
+                            echo "File ${targetFile} renamed: ${env.targetName}"
+                        } else {
+                            error "Error: File ${targetFile} does not exist, cannot rename!"
+                        }
                     }
                 }
             }
@@ -101,9 +118,9 @@ pipeline {
             steps {
                 script {
                     sh """
-                        url="http://10.10.192.15:8081/artifactory/ResearchKitSDK/Release/${env.verName}.\$(date +%Y%m%d%H%M)"
+                        url="http://10.10.192.15:8081/artifactory/skindot/Release/${env.verName}.${env.TIMESTAMP}"
                         echo \$url
-                        for file in \$outDir/ResearchKit_SDK_*.aar; do
+                        for file in \$outDir/${env.targetName}; do
                             if [ -f "\$file" ]; then
                                 echo "Uploading \$file to \$url"
                                 curl -u Jenkins:Beijing123 -T "\$file" "\$url/"
@@ -123,7 +140,7 @@ pipeline {
                 script {
                     def now = new Date()
                     def currentDate = new java.text.SimpleDateFormat("yyyyMMddHHmm").format(now)
-                    def url = "2025 ResearchKit SDK/Release/${env.verName}.${currentDate}/"
+                    def url = "2026 skindot/Release/${env.verName}.${env.TIMESTAMP}/"
 
                     ftpPublisher(
                             alwaysPublishFromMaster: false,
@@ -143,8 +160,8 @@ pipeline {
                                             patternSeparator: '[, ]+',
                                             remoteDirectory: url,
                                             remoteDirectorySDF: false,
-                                            removePrefix: outDir,
-                                            sourceFiles: "${outDir}/ResearchKit_SDK_*.aar"
+                                            removePrefix: env.outDir,
+                                            sourceFiles: "${env.outDir}/${env.targetName}"
                                         ],
                                     ],
                                     usePromotionTimestamp: false,
@@ -174,14 +191,14 @@ pipeline {
                             script: """
                                 url="https://alpha.goertek.com:8883/api/firmware/upload"
                                 echo \$url
-                                filePath="${outDir}/ResearchKit_SDK_*.aar"
+                                filePath="${outDir}/skindot_*.apk"
                                 for file in \$filePath; do
                                     if [ -f "\$file" ]; then
                                         MD5_VAL=\$(md5sum "\$file" | awk '{print \$1}')
                                         echo "The MD5 value of the file \$file is: \$MD5_VAL"
                                         echo "Uploading \$file to \$url"
                                         curl -v -X POST -F "file=@\$file" -F "verCode=\$VER_CODE" \
-                                        -F "verName=\$VER_NAME" -F "deviceTypeId=15" -F "extType=.aar" \
+                                        -F "verName=\$VER_NAME" -F "deviceTypeId=24" -F "extType=.apk" \
                                         -F "md5=\$MD5_VAL" "\$url"
                                         if [ \$? -ne 0 ]; then
                                             echo "Failed to upload \$file"
@@ -213,7 +230,7 @@ pipeline {
                             EXPORT_MD5 = output[5]
 
                             emailext(
-                                subject: "${EXPORT_FILE_NAME} ResearchKit SDK Lib Release",
+                                subject: "${EXPORT_FILE_NAME} skindot Phone App Release",
                                 body: "Dear all, <br><br>we're pleased to announce the release of ${EXPORT_FILE_NAME}. <br>Download from https://alpha.goertek.com:8883/api/firmware/download?md5=${EXPORT_MD5}. <br>Feedback is welcome at jeremy.li@goertek.com",
                                 to: "jeremy.li@goertek.com"
                             )
@@ -225,7 +242,7 @@ pipeline {
                     {
                         "msg_type": "text",
                         "content": {
-                            "text": "ResearchKit SDK Lib ${env.verName} is available, please downoad it from the following link: https://alpha.goertek.com:8883/api/firmware/download?md5=${EXPORT_MD5}"
+                            "text": "skindot Phone App ${env.verName} is available, please downoad it from the following link: https://alpha.goertek.com:8883/api/firmware/download?md5=${EXPORT_MD5}"
                         }
                     }
                     """
