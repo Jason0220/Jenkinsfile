@@ -38,7 +38,7 @@ pipeline {
         stage('PATCH') {
             steps {
                 script {
-                    sh 'git fetch ssh://10.10.192.13:29418/BES2800BP_GLASS refs/changes/48/7248/1 && git cherry-pick FETCH_HEAD'
+                    sh 'git fetch ssh://10.10.192.13:29418/BES2800BP_GLASS refs/changes/48/7248/3 && git cherry-pick FETCH_HEAD'
                 }
             }
         }

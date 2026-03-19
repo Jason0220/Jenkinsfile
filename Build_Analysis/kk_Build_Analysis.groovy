@@ -8,6 +8,7 @@ pipeline {
         GCC_ARM_TOOLCHAIN = "/home/data0/jenkins/tools/gcc-arm-none-eabi-10.3-2021.10/bin"
         PATH = "${PATH}:${GCC_ARM_TOOLCHAIN}:${BUILD_WRAPPER}:${SONAR_SCANNER}"
         HIMA_BRANCH_PATTERN = '^HIMA$'      // strictly matching the branch HIMA
+        SAIC_BRANCH_PATTERN = '^SAIC'
     }
 
     stages {
@@ -31,11 +32,12 @@ pipeline {
                     def currentBranch = env.GERRIT_BRANCH ?: 'unknown-branch'
                     echo "currentBranch: ${currentBranch}"
                     
-                    // if HIMA branch or not
-                    def isHimaBranch = (currentBranch =~ "${HIMA_BRANCH_PATTERN}") as boolean
-                    echo "Is HIMA branch: ${isHimaBranch}"
+                    def matchHimaPattern = (currentBranch =~ "${HIMA_BRANCH_PATTERN}") as boolean
+                    def matchSaicPattern = (currentBranch =~ "${SAIC_BRANCH_PATTERN}") as boolean
+                    def isDualBuildingBranch = matchHimaPattern || matchSaicPattern
+                    echo "Is Dual Building Branch: ${isDualBuildingBranch}"
 
-                    if (isHimaBranch) {
+                    if (isDualBuildingBranch) {
                         echo 'HIMA branch build & analysis process...'
                         ansiColor('xterm') {
                             dir('platform/z20k144mc') {
