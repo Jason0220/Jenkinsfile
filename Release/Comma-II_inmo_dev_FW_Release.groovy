@@ -1,0 +1,478 @@
+pipeline {
+    agent { label 'jenkins-node-10.10.192.18' }
+    environment {
+        PROJECT_DIR = "${HOME}/virtual_environment/comma-ii"
+        PROJECT_VENV_PATH = "${HOME}/virtual_environment/comma-ii/venv"
+    }
+
+    stages {
+        stage('ENV&INIT') {
+            steps {
+                script {
+                    env.verName = params.APP_VERSION
+                    echo "Version: ${env.verName}"
+                    env.otaPath = 'framework/ota/tools'
+                    echo "OTA_PATH: ${env.otaPath}"
+                    env.verCode = params.APP_VERSION.replaceAll('\\.', '')
+                    echo "${env.verCode}"
+                    env.targetDir = 'target/ua_customer'
+                    echo "TARGET_DIR: ${env.targetDir}"
+                    env.upgradePath = ''
+                    env.otaFileName = ''
+                }
+            }
+        }
+
+        stage('PYTHON_VENV') {
+            steps {
+                script {
+                    if (!fileExists("${PROJECT_VENV_PATH}/bin/activate")) {
+                        echo "venv not available, creating Python 3.12 venv..."
+                        dir("${PROJECT_DIR}") {
+                            sh 'python -m venv venv'
+                        }
+                    } else {
+                        echo "venv is available!"
+                    }
+                }
+            }
+        }
+
+        stage('CODE_SYNC') {
+            options {
+                retry(20)
+            }
+            steps {
+                checkout scmGit(branches: [[name: '*/inmo_dev']], 
+                extensions: [], 
+                userRemoteConfigs: [[credentialsId: 'Jenkins', 
+                name: 'origin', 
+                refspec: '+refs/heads/inmo_dev:refs/remotes/origin/inmo_dev', 
+                url: 'ssh://10.10.192.13:29418/Comma']])
+            }
+        }
+
+        stage('BUILD_USB_FW') {
+            steps {
+                script {
+                    withEnv([
+                        "APP_VERSION=${params.APP_VERSION}",
+                        "TARGET_DIR=${env.targetDir}"
+                        ]) {
+                        sh """
+                            git reset --hard
+                            git clean -fxd
+                            cd "\$TARGET_DIR" || { echo "Failed to change directory to \$TARGET_DIR"; exit 1; }
+                            scons -j\$(nproc) version="\$APP_VERSION" package=base
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('PREPARE_USB_FW_for_PACKAGING') {
+            steps {
+                script {
+                   sh """
+                        pwd
+                        mkdir -p out/App_debug
+                        cp "${env.targetDir}"/commaii_ap.* ./out/App_debug/ || { echo "Failed to copy commaii_ap.*"; exit 1; }
+                        cp "${env.targetDir}"/base_*.hex ./out/ || { echo "Failed to copy base_*.hex"; exit 1; }
+                    """
+                }
+            }
+        }
+
+        stage('BUILD_OTA') {
+            steps {
+                dir ("${env.otaPath}") {
+                    script {
+                        withEnv([
+                            "APP_VERSION=${params.APP_VERSION}"
+                        ]) {
+                            sh '''
+                                echo "Activating venv..."
+                                . ${PROJECT_VENV_PATH}/bin/activate
+                                
+                                echo "Python version: "
+                                python --version
+                                
+                                echo "pip version: "
+                                pip --version
+                                
+                                echo "Installing project dependencies..."
+                                pip install -r ${PROJECT_DIR}/requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
+                                
+                                if [ "$OTA" = "Full" ]; then
+                                    echo "Generating Full OTA upgrade package"
+                                    python ota_packager.py type=ua version="$APP_VERSION"
+                                else
+                                    echo "Generating App OTA upgrade package"
+                                    python package_single_firmware.py user_ua version="$APP_VERSION"
+                                fi
+                            '''
+                        }
+                        env.Timestamp = new java.text.SimpleDateFormat("yyyyMMddHHmm").format(new Date())
+                        echo "Timestamp: ${env.Timestamp}"
+                    }
+                }
+            }
+        }
+        
+        stage('Prepare_OTA_bin') {
+            steps {
+                dir("${env.otaPath}") {
+                    script {
+                        // 1. 查找升级文件和目录
+                        def upgradePath = sh(script: 'ls -d upgrade_[au]* 2>/dev/null || true', returnStdout: true).trim()
+                        def upgradeFile = sh(script: """
+                            if [ -n "$upgradePath" ]; then 
+                                ls "$upgradePath"/upgrade* 2>/dev/null || true;
+                            fi
+                        """, returnStdout: true).trim()
+
+                        if (!upgradePath || !upgradeFile) {
+                            error "Failed to find upgrade path or file"
+                        }
+
+                        // 2. 构造新文件名
+                        def newBaseName = "commaii_inmo_${params.APP_VERSION}"
+                        def fileNameParts = upgradeFile.split('/')
+                        def fileNameWithoutUpgrade = fileNameParts.last().replace('upgrade', '')
+                        
+                        // 3. 持久化环境变量（在 withEnv 外部赋值）
+                        env.upgradePath = upgradePath
+                        echo "upgradePath: ${env.upgradePath}"
+                        env.otaFileName = "${newBaseName}${fileNameWithoutUpgrade}"
+                        echo "otaFileName: ${env.otaFileName}"
+
+                        // 4. 重命名文件
+                        sh """
+                            echo "Renaming file: ${fileNameParts[-1]} to ${env.otaFileName}"
+                            mv "$upgradeFile" "$upgradePath/${env.otaFileName}"
+                            if [ \$? -ne 0 ]; then
+                                echo "Failed to rename file"
+                                exit 1
+                            fi
+                        """
+
+                        // 5. 列出重命名后的文件
+                        sh """
+                            echo "Listing OTA file in $upgradePath after renaming:"
+                            ls "$upgradePath/${env.otaFileName}"
+                        """
+                    }
+                }
+
+                dir("${env.WORKSPACE}") {
+                    script {
+                        // 确保路径以 / 分隔
+                        def otaFilePath = "${env.otaPath}/${env.upgradePath}/${env.otaFileName}".replace('//', '/')
+                        echo "otaFilePath: ${otaFilePath}"
+                        
+                        sh """
+                            pwd
+                            mkdir -p out/App_user out/Bootloader out/OTA
+                            cp "${env.targetDir}"/commaii_ap.* ./out/App_user/ || { echo "Failed to copy commaii_ap.*"; exit 1; }
+                            cp "${env.otaPath}"/firmware/*.* ./out/Bootloader/ || { echo "Failed to copy firmware"; exit 1; }
+                            cp "$otaFilePath" ./out/OTA/ || { echo "Failed to copy OTA file"; exit 1; }
+                            
+                            cd out
+                            zip -r "commaii_inmo_${params.APP_VERSION}.${env.Timestamp}.zip" * || { echo "Zip failed"; exit 1; }
+                        """
+                        
+                        // 获取生成的 ZIP 文件名
+                        env.Zip_File_Name = "commaii_inmo_${params.APP_VERSION}.${env.Timestamp}.zip"
+                        echo "Generated ZIP: ${env.Zip_File_Name}"
+                    }
+                }
+            }
+        }
+
+        stage('BACKUP_to_Artifactory') {
+            steps {
+                script {
+                    withEnv([
+                        "APP_VERSION=${params.APP_VERSION}",
+                        "TARGET_DIR=${env.targetDir}",
+                        "otaPath=${env.otaPath}",
+                        "upgradePath=${env.upgradePath}",
+                        "otaFileName=${env.otaFileName}"
+                        ]) {
+                        sh """
+                            url="http://10.10.192.15:8081/artifactory/comma-ii-inmo/Release/\$APP_VERSION.${env.Timestamp}"
+                            echo \$url
+                            userpass="Jenkins:Beijing123"
+                            for file in "\$TARGET_DIR"/base_*.hex; do
+                                if [ -f "\$file" ]; then
+                                    curl -u "\$userpass" -T "\$file" "\$url/"
+                                fi
+                            done
+                            # 上传 debug commaii_ap.* 文件
+                            for file in ./out/App_debug/commaii_ap.*; do
+                                if [ -f "\$file" ]; then
+                                    curl -u "\$userpass" -T "\$file" "\$url/App_debug/"
+                                    if [ \$? -ne 0 ]; then
+                                        echo "Failed to upload file \$file"
+                                        exit 1
+                                    fi
+                                fi
+                            done
+                            # 上传 OTA commaii_ap.* 文件
+                            for file in ./out/App_user/commaii_ap.*; do
+                                if [ -f "\$file" ]; then
+                                    curl -u "\$userpass" -T "\$file" "\$url/App_user/"
+                                    if [ \$? -ne 0 ]; then
+                                        echo "Failed to upload file \$file"
+                                        exit 1
+                                    fi
+                                fi
+                            done
+
+                            # 上传 commaii_ota.* 文件
+                            for file in "\$otaPath"/firmware/commaii_ota.*; do
+                                if [ -f "\$file" ]; then
+                                    curl -u "\$userpass" -T "\$file" "\$url/Bootloader/"
+                                    if [ \$? -ne 0 ]; then
+                                        echo "Failed to upload file \$file"
+                                        exit 1
+                                    fi
+                                fi
+                            done
+
+                            # 上传 commaii_secure.* 文件
+                            for file in "\$otaPath"/firmware/commaii_secure.*; do
+                                if [ -f "\$file" ]; then
+                                    curl -u "\$userpass" -T "\$file" "\$url/Bootloader/"
+                                    if [ \$? -ne 0 ]; then
+                                        echo "Failed to upload file \$file"
+                                        exit 1
+                                    fi
+                                fi
+                            done
+
+                            # 上传 version.txt 文件
+                            file="\$otaPath/firmware/version.txt"
+                            if [ -f "\$file" ]; then
+                                curl -u "\$userpass" -T "\$file" "\$url/Bootloader/"
+                                if [ \$? -ne 0 ]; then
+                                    echo "Failed to upload file \$file"
+                                    exit 1
+                                fi
+                            fi
+
+                            # 上传OTA bin 文件
+                            file="\$otaPath/\$upgradePath/\$otaFileName"
+                            if [ -f "\$file" ]; then
+                                curl -u "\$userpass" -T "\$file" "\$url/OTA/"
+                                if [ \$? -ne 0 ]; then
+                                    echo "Failed to upload file \$file"
+                                    exit 1
+                                fi
+                            fi
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('BACKUP_to_FTP') {
+            steps {
+                script {
+                    def now = new Date()
+                    def currentDate = new java.text.SimpleDateFormat("yyyyMMddHHmm").format(now)
+                    def url = "2024 Comma-II/Release/inmo/commaii_inmo_${params.APP_VERSION}.${env.Timestamp}"
+                    
+                    ftpPublisher(
+                            alwaysPublishFromMaster: false,
+                            continueOnError: false,
+                            failOnError: false,
+                            publishers: [
+                                [
+                                    configName: '10.10.192.11',
+                                    transfers: [
+                                        [
+                                            asciiMode: false,
+                                            cleanRemote: false,
+                                            excludes: '',
+                                            flatten: false,
+                                            makeEmptyDirs: false,
+                                            noDefaultExcludes: false,
+                                            patternSeparator: '[, ]+',
+                                            remoteDirectory: url,
+                                            remoteDirectorySDF: false,
+                                            removePrefix: env.targetDir,
+                                            sourceFiles: "${env.targetDir}/base_*.hex"
+                                        ],
+                                        [
+                                            asciiMode: false,
+                                            cleanRemote: false,
+                                            excludes: '',
+                                            flatten: false,
+                                            makeEmptyDirs: false,
+                                            noDefaultExcludes: false,
+                                            patternSeparator: '[, ]+',
+                                            remoteDirectory: "${url}/App_debug/",
+                                            remoteDirectorySDF: false,
+                                            removePrefix: "out/App_debug",
+                                            sourceFiles: "out/App_debug/commaii_ap.*"
+                                        ],
+                                        [
+                                            asciiMode: false,
+                                            cleanRemote: false,
+                                            excludes: '',
+                                            flatten: false,
+                                            makeEmptyDirs: false,
+                                            noDefaultExcludes: false,
+                                            patternSeparator: '[, ]+',
+                                            remoteDirectory: "${url}/App_user/",
+                                            remoteDirectorySDF: false,
+                                            removePrefix: "out/App_user",
+                                            sourceFiles: "out/App_user/commaii_ap.*"
+                                        ],
+                                        [
+                                            asciiMode: false,
+                                            cleanRemote: false,
+                                            excludes: '',
+                                            flatten: false,
+                                            makeEmptyDirs: false,
+                                            noDefaultExcludes: false,
+                                            patternSeparator: '[, ]+',
+                                            remoteDirectory: "${url}/Bootloader/",
+                                            remoteDirectorySDF: false,
+                                            removePrefix: "${env.otaPath}/firmware/",
+                                            sourceFiles: "${env.otaPath}/firmware/commaii_ota.*"
+                                        ],
+                                        [
+                                            asciiMode: false,
+                                            cleanRemote: false,
+                                            excludes: '',
+                                            flatten: false,
+                                            makeEmptyDirs: false,
+                                            noDefaultExcludes: false,
+                                            patternSeparator: '[, ]+',
+                                            remoteDirectory: "${url}/Bootloader/",
+                                            remoteDirectorySDF: false,
+                                            removePrefix: "${env.otaPath}/firmware/",
+                                            sourceFiles: "${env.otaPath}/firmware/commaii_secure.*"
+                                        ],
+                                        [
+                                            asciiMode: false,
+                                            cleanRemote: false,
+                                            excludes: '',
+                                            flatten: false,
+                                            makeEmptyDirs: false,
+                                            noDefaultExcludes: false,
+                                            patternSeparator: '[, ]+',
+                                            remoteDirectory: "${url}/Bootloader/",
+                                            remoteDirectorySDF: false,
+                                            removePrefix: "${env.otaPath}/firmware/",
+                                            sourceFiles: "${env.otaPath}/firmware/version.txt"
+                                        ],
+                                        [
+                                            asciiMode: false,
+                                            cleanRemote: false,
+                                            excludes: '',
+                                            flatten: false,
+                                            makeEmptyDirs: false,
+                                            noDefaultExcludes: false,
+                                            patternSeparator: '[, ]+',
+                                            remoteDirectory: "${url}/OTA/",
+                                            remoteDirectorySDF: false,
+                                            removePrefix: "${env.otaPath}",
+                                            sourceFiles: "${env.otaPath}/${upgradePath}/${otaFileName}"
+                                        ]
+                                    ],
+                                    usePromotionTimestamp: false,
+                                    useWorkspaceInPromotion: false,
+                                    verbose: false
+                                ]
+                            ]
+                    )
+                }
+            }
+        }
+
+        stage('UPLOAD_to_FW-MS') {
+            steps {
+                script {
+                    def feishuWebhookUrl = "https://open.feishu.cn/open-apis/bot/v2/hook/6f4997f3-1d60-48fa-923d-3f8a33779807"
+                    def EXPORT_FILE_NAME
+                    def EXPORT_MD5
+
+                    // 执行 sh 脚本块，获取 MD5 值和文件名
+                    def output = sh(
+                        script: """
+                            url="https://alpha.goertek.com:8883/api/firmware/upload"
+                            echo \$url
+                            filePath="out/${env.Zip_File_Name}"
+                            for file in \$filePath; do
+                                if [ -f "\$file" ]; then
+                                    MD5_VAL=\$(md5sum "\$file" | awk '{print \$1}')
+                                    echo "The MD5 value of the file \$file is: \$MD5_VAL"
+                                    echo "Uploading \$file to \$url"
+                                    curl -v -X POST -F "file=@\$file" -F "verCode=${env.verCode}" \
+                                    -F "verName=${env.verName}" -F "deviceTypeId=7" -F "extType=.zip" \
+                                    -F "md5=\$MD5_VAL" "\$url"
+                                    if [ \$? -ne 0 ]; then
+                                        echo "Failed to upload \$file"
+                                        exit 1
+                                    fi
+                                    echo "Sending email for \$file"
+                                    FILE_NAME=\$(basename "\$file")
+                                    export EXPORT_FILE_NAME=\$FILE_NAME
+                                    export EXPORT_MD5=\$MD5_VAL
+                                    # 输出变量值，用于 Groovy 脚本获取
+                                    echo "\$EXPORT_FILE_NAME"
+                                    echo "\$EXPORT_MD5"
+                                fi
+                            done
+                        """,
+                        returnStdout: true
+                    ).trim().split('\n')
+
+                    // 打印 output 数组的长度
+                    println "output 数组的长度为: ${output.length}"
+
+                    // 循环打印 output 数组中的每个元素
+                    for (int i = 0; i < output.length; i++) {
+                        println "output[$i]: ${output[i]}"
+                    }
+
+                    if (output.length == 6) {
+                        EXPORT_FILE_NAME = output[4]
+                        EXPORT_MD5 = output[5]
+
+                        emailext(
+                            subject: "${EXPORT_FILE_NAME} Comma-II FW Release",
+                            body: "Dear all, <br><br>We're pleased to announce the release of ${EXPORT_FILE_NAME} for inmo_dev user variant. <br>Download from https://alpha.goertek.com:8883/api/firmware/download?md5=${EXPORT_MD5}. <br>Feedback is welcomed at jeremy.li@goertek.com",
+                            to: "jeremy.li@goertek.com"
+                        )
+                    }
+
+                    // 构建飞书消息的 JSON 数据
+                    def message = """
+                    {
+                        "msg_type": "text",
+                        "content": {
+                            "text": "Comma-II inmo_dev firmware release ${env.verName} of user variant is available, please downoad it from the following link: https://alpha.goertek.com:8883/api/firmware/download?md5=${EXPORT_MD5}"
+                        }
+                    }
+                    """
+
+                    // 使用 httpRequest 插件发送 POST 请求到飞书 Webhook
+                    try {
+                        def response = httpRequest contentType: 'APPLICATION_JSON', httpMode: 'POST', requestBody: message, url: feishuWebhookUrl
+                        if (response.status == 200) {
+                            echo "The firmware download link has been successfully sent to the Feishu group."
+                        } else {
+                            echo "Sending failed, HTTP status code: ${response.status}"
+                        }
+                    } catch (Exception e) {
+                        echo "An error occurred while sending the request: ${e.message}"
+                    }
+                }
+            }
+        }
+    }
+}

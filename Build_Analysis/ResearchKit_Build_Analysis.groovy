@@ -52,15 +52,13 @@ pipeline {
                     def persistentPath = "/home/jenkins/sonar-files/ResearchKit/${exclusionFile}"
                     sh "if [ ! -f ${exclusionFile} ]; then cp ${persistentPath} ./; fi"    // if not exist then copy
                     def exclusionCpdFile = "sonar_cpd_exclusions.txt"
-                    def persistentCpdPath = "/home/jenkins/sonar-files/Spinel/${exclusionCpdFile}"
+                    def persistentCpdPath = "/home/jenkins/sonar-files/ResearchKit/${exclusionCpdFile}"
                     sh "if [ ! -f ${exclusionCpdFile} ]; then cp ${persistentCpdPath} ./; fi"
 
                     sh '''
                         > sonar-project.properties
                             echo "sonar.sources=." >> sonar-project.properties
                             echo "sonar.sourceEncoding=UTF-8" >> sonar-project.properties
-                            # Waiting for the result of Quality Gate
-                            echo "sonar.qualitygate.wait=true" >> sonar-project.properties
                             echo -n "sonar.exclusions=" >> sonar-project.properties
                             cat sonar_exclusions.txt >> sonar-project.properties
                             echo -n "sonar.cpd.exclusions=" >> sonar-project.properties

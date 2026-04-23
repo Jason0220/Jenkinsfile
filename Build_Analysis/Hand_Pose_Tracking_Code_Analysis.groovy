@@ -1,11 +1,11 @@
 import groovy.json.JsonOutput
 
 pipeline {
-    agent any
+    agent { label 'jenkins-node-10.10.192.18' }
     environment {
-        SONAR_SCANNER = "/home/data0/jenkins/tools/sonar-scanner/bin"
+        SONAR_SCANNER = "/home/jenkins/tools/sonar-scanner/bin"
         
-        PATH = "${PATH}:${SONAR_SCANNER}"
+        PATH = "${SONAR_SCANNER}:${PATH}"
     }
 
     stages {
@@ -25,17 +25,28 @@ pipeline {
         
         stage('Code_Analysis') {
             steps {
-                withSonarQubeEnv('SonarQube_46') {
-                    sh """
-                        touch sonar-project.properties
-                        echo "sonar.projectKey=Hand_Pose_Tracking" >> sonar-project.properties
-                        sonar-scanner \
-                            -Dsonar.projectKey=Hand_Pose_Tracking \
-                            -Dsonar.branch.name=${env.GERRIT_BRANCH} \
-                            -Dsonar.sources=. \
-                            -Dsonar.host.url=http://10.10.192.46:9000/sonarqube \
-                            -Dsonar.login=sqp_862da05a39d3ac5f6f7c4b2b94976d95d8eefcdf
-                    """
+                script {
+                    withSonarQubeEnv('SonarQube_46') {
+                        def exclusionCpdFile = "sonar_cpd_exclusions.txt"
+                        def persistentCpdPath = "/home/jenkins/sonar-files/Hand_Pose_Tracking/${exclusionCpdFile}"
+                        sh "if [ ! -f ${exclusionCpdFile} ]; then cp ${persistentCpdPath} ./; fi"
+                        
+                        sh """
+                            > sonar-project.properties
+                                echo "sonar.projectKey=Hand_Pose_Tracking" >> sonar-project.properties
+                                echo "sonar.sources=." >> sonar-project.properties
+                                echo "sonar.sourceEncoding=UTF-8" >> sonar-project.properties
+                                echo -n "sonar.cpd.exclusions=" >> sonar-project.properties
+                                cat sonar_cpd_exclusions.txt >> sonar-project.properties
+                            
+                            sonar-scanner \
+                                -Dsonar.projectKey=Hand_Pose_Tracking \
+                                -Dsonar.branch.name=${env.GERRIT_BRANCH} \
+                                -Dsonar.sources=. \
+                                -Dsonar.host.url=http://10.10.192.46:9000/sonarqube \
+                                -Dsonar.login=sqp_862da05a39d3ac5f6f7c4b2b94976d95d8eefcdf
+                        """
+                    }
                 }
             }
         }

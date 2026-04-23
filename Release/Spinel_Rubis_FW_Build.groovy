@@ -11,6 +11,7 @@ pipeline {
                     echo "${env.verCode}"
                     env.product = params.PRODUCT
                     echo "PRODUCT: ${env.product}"
+                    echo "BRANCH: ${params.BRANCH}"
                 }
             }
         }
@@ -23,7 +24,7 @@ pipeline {
             steps {
                 cleanWs()
                 checkout scmGit(
-                    branches: [[name: "*/spinel_app"]], 
+                    branches: [[name: "*/${params.BRANCH}"]], 
                     extensions: [[$class: 'CleanBeforeCheckout']], 
                     userRemoteConfigs: [[
                         credentialsId: 'Jenkins', 
